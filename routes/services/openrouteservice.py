@@ -63,6 +63,8 @@ US_STATE_ABBREV = {
     "DISTRICT OF COLUMBIA": "DC",
 }
 
+US_STATE_FULL_NAME = {abbr: name for name, abbr in US_STATE_ABBREV.items()}
+
 US_STATE_NEIGHBORS = {
     "AL": ["FL", "GA", "TN", "MS"],
     "AK": [],
@@ -127,6 +129,13 @@ def normalize_state_code(value: str | None) -> str | None:
         return value
 
     return US_STATE_ABBREV.get(value)
+
+
+def state_code_to_full_name(state_code: str | None) -> str | None:
+    if not state_code:
+        return None
+
+    return US_STATE_FULL_NAME.get(state_code.upper())
 
 
 def build_state_corridor(start_state: str | None, end_state: str | None) -> list[str]:
@@ -247,7 +256,8 @@ def get_route(start_coords: list, end_coords: list) -> dict:
             start_coords,
             end_coords
         ],
-        "units": "mi"
+        "units": "mi",
+        "format": "geojson"
     }
 
     response = requests.post(url, json=payload, headers=headers, timeout=15)
@@ -270,3 +280,85 @@ def get_route(start_coords: list, end_coords: list) -> dict:
         }
 
     raise ValueError(f"Unexpected route response: {data}")
+
+
+def _point_line_distance(point: list[float], start: list[float], end: list[float]) -> float:
+    if start == end:
+        dx = point[0] - start[0]
+        dy = point[1] - start[1]
+        return (dx * dx + dy * dy) ** 0.5
+
+    sx, sy = start
+    ex, ey = end
+    px, py = point
+    dx = ex - sx
+    dy = ey - sy
+    if dx == 0 and dy == 0:
+        return ((px - sx) ** 2 + (py - sy) ** 2) ** 0.5
+
+    t = ((px - sx) * dx + (py - sy) * dy) / (dx * dx + dy * dy)
+    t = max(0.0, min(1.0, t))
+    proj_x = sx + t * dx
+    proj_y = sy + t * dy
+    return ((px - proj_x) ** 2 + (py - proj_y) ** 2) ** 0.5
+
+
+def simplify_linestring(coords: list[list[float]], tolerance: float) -> list[list[float]]:
+    if not coords or len(coords) <= 2:
+        return coords
+
+    max_dist = 0.0
+    index = 0
+    start = coords[0]
+    end = coords[-1]
+
+    for i in range(1, len(coords) - 1):
+        dist = _point_line_distance(coords[i], start, end)
+        if dist > max_dist:
+            max_dist = dist
+            index = i
+
+    if max_dist > tolerance:
+        left = simplify_linestring(coords[: index + 1], tolerance)
+        right = simplify_linestring(coords[index:], tolerance)
+        return left[:-1] + right
+
+    return [start, end]
+
+
+def simplify_geojson_linestring(geometry: dict | None, tolerance: float) -> dict | None:
+    if not geometry or not isinstance(geometry, dict):
+        return None
+    if geometry.get("type") != "LineString":
+        return geometry
+
+    coords = geometry.get("coordinates", [])
+    simplified = simplify_linestring(coords, tolerance)
+    return {
+        "type": "LineString",
+        "coordinates": simplified,
+    }
+
+
+def encode_polyline(coords: list[list[float]], precision: int = 5) -> str:
+    factor = 10 ** precision
+    last_lat = 0
+    last_lng = 0
+    result: list[str] = []
+
+    def encode_value(value: int) -> None:
+        value = ~(value << 1) if value < 0 else (value << 1)
+        while value >= 0x20:
+            result.append(chr((0x20 | (value & 0x1F)) + 63))
+            value >>= 5
+        result.append(chr(value + 63))
+
+    for lng, lat in coords:
+        lat_i = int(round(lat * factor))
+        lng_i = int(round(lng * factor))
+        encode_value(lat_i - last_lat)
+        encode_value(lng_i - last_lng)
+        last_lat = lat_i
+        last_lng = lng_i
+
+    return "".join(result)
