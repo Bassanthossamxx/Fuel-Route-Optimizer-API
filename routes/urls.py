@@ -1,5 +1,6 @@
 from django.urls import path
+from .views import FuelStationListAPIView
 
 urlpatterns = [
-    # endpoints will go here
+    path('stations/', FuelStationListAPIView.as_view(), name='fuel-stations'),
 ]
