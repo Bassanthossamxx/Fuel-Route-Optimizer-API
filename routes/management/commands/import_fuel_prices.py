@@ -4,7 +4,7 @@ from routes.models import FuelStation
 
 
 class Command(BaseCommand):
-    help = "One-time import of fuel station prices from CSV file"
+    help = "One-time import of fuel station prices from CSV file (bulk insert)"
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -17,7 +17,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         file_path = options['file']
 
-        added_count = 0
+        to_create = []
         skipped_count = 0
         failed_count = 0
 
@@ -39,22 +39,15 @@ class Command(BaseCommand):
                             skipped_count += 1
                             continue
 
-                        price = float(price)
-
-                        _, created = FuelStation.objects.get_or_create(
+                        station = FuelStation(
                             station_name=station_name,
                             state=state,
-                            defaults={
-                                'address': row.get('Address', '').strip(),
-                                'city': row.get('City', '').strip(),
-                                'price_per_gallon': price,
-                            }
+                            address=row.get('Address', '').strip(),
+                            city=row.get('City', '').strip(),
+                            price_per_gallon=float(price),
                         )
 
-                        if created:
-                            added_count += 1
-                        else:
-                            skipped_count += 1
+                        to_create.append(station)
 
                     except Exception as row_error:
                         failed_count += 1
@@ -70,7 +63,14 @@ class Command(BaseCommand):
             )
             return
 
+        # Bulk insert (VERY FAST)
+        FuelStation.objects.bulk_create(
+            to_create,
+            batch_size=500,
+            ignore_conflicts=True,
+        )
+
         self.stdout.write(self.style.SUCCESS("Fuel stations import completed"))
-        self.stdout.write(f"Added records : {added_count}")
+        self.stdout.write(f"Added records   : {len(to_create)}")
         self.stdout.write(f"Skipped records : {skipped_count}")
-        self.stdout.write(f"Failed records : {failed_count}")
+        self.stdout.write(f"Failed records  : {failed_count}")
