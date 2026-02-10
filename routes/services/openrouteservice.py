@@ -421,7 +421,7 @@ def _point_line_distance(point: list[float], start: list[float], end: list[float
     # STEP 5: Return distance from original point to projection point
     return ((px - proj_x) ** 2 + (py - proj_y) ** 2) ** 0.5
 
-
+# from here until the end of the file are geometry processing functions, not coded by me, but used in some ORS responses
 def simplify_linestring(coords: list[list[float]], tolerance: float) -> list[list[float]]:
     """
     Simplify coordinate array using Ramer-Douglas-Peucker algorithm.
@@ -466,7 +466,7 @@ def simplify_linestring(coords: list[list[float]], tolerance: float) -> list[lis
     # STEP 4: All middle points are too close - just keep start and end
     return [start, end]
 
-
+# This is a wrapper to simplify GeoJSON LineString geometries using the above algorithm
 def simplify_geojson_linestring(geometry: dict | None, tolerance: float) -> dict | None:
     """
     Simplify GeoJSON LineString by reducing coordinate count.
@@ -489,7 +489,7 @@ def simplify_geojson_linestring(geometry: dict | None, tolerance: float) -> dict
         "coordinates": simplified,
     }
 
-# this is for google polyline format, not coded by me, but used in some ORS responses
+# this is for google polyline format
 def decode_polyline(encoded: str, precision: int = 5) -> list[list[float]]:
     """
     Decode Google Polyline Format string into coordinates.
