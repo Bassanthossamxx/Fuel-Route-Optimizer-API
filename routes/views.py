@@ -7,7 +7,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from drf_spectacular.utils import extend_schema, OpenApiExample
-from .services.openrouteservice import geocode_place, get_route, is_within_us_bbox
+from .services.openrouteservice import geocode_place, get_route, is_within_us_bbox, build_state_corridor
 
 class FuelStationListAPIView(ListAPIView):
     queryset = FuelStation.objects.all().order_by('id')
@@ -81,9 +81,15 @@ class RoutePlanAPIView(APIView):
                 end_data["coords"]
             )
 
+            state_corridor = build_state_corridor(
+                start_data.get("state"),
+                end_data.get("state")
+            )
+
             return Response({
                 "start": start_text,
                 "end": end_text,
+                "states_list_inside_start_to_end": state_corridor,
                 "distance_miles": round(route["summary"]["distance"], 2),
                 "route_geometry": route["geometry"],
             })
