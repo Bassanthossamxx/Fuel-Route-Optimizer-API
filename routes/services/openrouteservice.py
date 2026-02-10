@@ -278,7 +278,7 @@ def geocode_place(place_name: str, enforce_us: bool = False) -> dict:
     if enforce_us:
         params["boundary.country"] = "US"
 
-    response = requests.get(url, headers=headers, params=params, timeout=10)
+    response = requests.get(url, headers=headers, params=params, timeout=3)
     response.raise_for_status()
 
     data = response.json()
@@ -344,7 +344,7 @@ def get_route(start_coords: list, end_coords: list) -> dict:
         "format": "geojson"
     }
 
-    response = requests.post(url, json=payload, headers=headers, timeout=15)
+    response = requests.post(url, json=payload, headers=headers, timeout=8)
     response.raise_for_status()
 
     data = response.json()

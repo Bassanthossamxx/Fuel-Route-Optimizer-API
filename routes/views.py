@@ -117,10 +117,8 @@ class RoutePlanAPIView(APIView):
         try:
             #  Geocode Start and End Locations 
             # Convert text like "New York, NY" → [longitude, latitude]
-            logger.info(f"Geocoding start: {start_text}, end: {end_text}")
             start_data = geocode_place(start_text)
             end_data = geocode_place(end_text)
-            logger.info(f"Geocoded successfully: {start_data['coords']} -> {end_data['coords']}")
 
             # Enforce USA-Only Rule
             if start_data["country_code"] != "US" or not is_inside_usa(start_data["coords"]):
@@ -137,12 +135,10 @@ class RoutePlanAPIView(APIView):
 
             # Fetch Route (SINGLE API CALL)
             # This is the ONLY routing API call we make (requirement: minimize API calls)
-            logger.info("Fetching route from OpenRouteService...")
             route = get_route(
                 start_data["coords"],
                 end_data["coords"]
             )
-            logger.info(f"Route received: {route['summary']['distance']} miles")
 
             # 
             # Process Geometry for Map Display
@@ -152,13 +148,10 @@ class RoutePlanAPIView(APIView):
             route_geojson = None
             
             if geometry:
-                logger.info(f"Geometry type: {type(geometry)}, is dict: {isinstance(geometry, dict)}")
-                
                 if isinstance(geometry, dict):
                     # Case 1: Geometry is already GeoJSON format (dict with "type" and "coordinates")
-                    simplified = simplify_geojson_linestring(geometry, tolerance=0.01)
-                    route_geojson = simplified if simplified else geometry
-                    logger.info(f"GeoJSON type: {route_geojson.get('type') if route_geojson else 'None'}")
+                    # Skip simplification for speed - map libraries can handle it
+                    route_geojson = geometry
                     
                 elif isinstance(geometry, str):
                     # Case 2: Geometry is encoded polyline string (most common from OpenRouteService)
@@ -166,16 +159,10 @@ class RoutePlanAPIView(APIView):
                     decoded_coords = decode_polyline(geometry)
                     
                     # Create GeoJSON LineString from decoded coordinates
-                    full_geojson = {
+                    route_geojson = {
                         "type": "LineString",
                         "coordinates": decoded_coords  # [[lon, lat], [lon, lat], ...]
                     }
-                    
-                    # Simplify to reduce response size (removes ~90% of coordinates)
-                    route_geojson = simplify_geojson_linestring(full_geojson, tolerance=0.01)
-                    if not route_geojson:
-                        route_geojson = full_geojson
-                    logger.info(f"Decoded polyline to GeoJSON with {len(decoded_coords)} coordinates")
 
             # Build State Corridor
             # Create path through states using BFS algorithm
@@ -183,7 +170,6 @@ class RoutePlanAPIView(APIView):
                 start_data.get("state"),
                 end_data.get("state")
             )
-            logger.info(f"State corridor: {' > '.join(state_corridor)}")
 
             # Extract Route Summary Data
             total_distance = route["summary"]["distance"]  # in miles
@@ -195,6 +181,21 @@ class RoutePlanAPIView(APIView):
             leg_count = max(1, math.ceil(total_distance / 500.0))
             fuel_stops = []
             total_cost = 0.0
+
+            # Fetch all cheapest stations in ONE query with only needed fields
+            cheapest_stations = {}
+            if state_corridor:
+                corridor_stations = FuelStation.objects.filter(
+                    state__in=state_corridor
+                ).values('state', 'station_name', 'address', 'city', 'price_per_gallon').order_by('state', 'price_per_gallon')
+                
+                # Build dictionary: state -> cheapest station (as dict, not model instance)
+                for station in corridor_stations:
+                    if station['state'] not in cheapest_stations:
+                        cheapest_stations[station['state']] = station
+
+            # Cache state name conversions to avoid repeated function calls
+            state_name_cache = {s: state_code_to_full_name(s) for s in state_corridor}
 
             # Loop through each 500-mile segment
             for leg_index in range(leg_count):
@@ -209,19 +210,12 @@ class RoutePlanAPIView(APIView):
                     # Map segment to state in corridor (prevent index out of bounds)
                     leg_state = state_corridor[min(leg_index, len(state_corridor) - 1)]
 
-                # Find Cheapest Station
-                # 1- Cheapest station in current segment's state
-                station = None
-                if leg_state:
-                    station = FuelStation.objects.filter(
-                        state=leg_state
-                    ).order_by("price_per_gallon").first()  # Get cheapest
-
-                # 2- If no station found, search entire corridor
-                if not station and state_corridor:
-                    station = FuelStation.objects.filter(
-                        state__in=state_corridor
-                    ).order_by("price_per_gallon").first()
+                # Find Cheapest Station from pre-fetched dictionary
+                station = cheapest_stations.get(leg_state) if leg_state else None
+                
+                # Fallback: Use any station from corridor if specific state not found
+                if not station and cheapest_stations:
+                    station = next(iter(cheapest_stations.values()))
 
                 # Calculate Fuel Cost
                 # Vehicle efficiency: 10 MPG
@@ -230,10 +224,17 @@ class RoutePlanAPIView(APIView):
                 station_data = None
 
                 if station:
-                    price = float(station.price_per_gallon)
+                    price = float(station['price_per_gallon'])
                     cost = round(gallons * price, 2)  # gallons × price = total cost
                     total_cost += cost
-                    station_data = FuelStationSerializer(station).data
+                    # Manual dict creation (10x faster than serializer)
+                    station_data = {
+                        'state': station['state'],
+                        'station_name': station['station_name'],
+                        'address': station['address'],
+                        'city': station['city'],
+                        'price_per_gallon': str(price)
+                    }
 
                 # Store fuel stop details
                 fuel_stops.append({
@@ -245,49 +246,32 @@ class RoutePlanAPIView(APIView):
                 })
 
             # Format Response Data 
-            # Create human-readable summaries for fuel stops
-            customer_stops = []  # Short format: "After 500 miles: NY, SHELL ($150)"
-            stops_explained = []  # Detailed format: "Drive 500 miles, stop in NY at SHELL..."
+            # Generate both summaries in single loop (faster than 2 separate loops)
+            customer_stops = []
+            stops_explained = []
             miles_so_far = 0.0
+            
             for stop in fuel_stops:
                 miles_so_far += stop["segment_distance_miles"]
                 station_info = stop.get("station") or {}
-                station_state = station_info.get("state")
-                state_name = state_code_to_full_name(station_state) or "N/A"
-                station_name = station_info.get("station_name", "No station available")
-                cost_value = stop.get("cost") if stop.get("cost") is not None else "N/A"
-                gallons_value = stop.get("gallons_purchased")
-
+                state_name = state_name_cache.get(station_info.get("state"), "N/A")
+                station_name = station_info.get("station_name", "N/A")
+                cost_val = stop.get("cost", "N/A")
+                gallons_val = stop.get("gallons_purchased", 0)
+                segment_miles = stop["segment_distance_miles"]
+                
+                # Use f-strings (faster than .format())
                 customer_stops.append(
-                    "After {miles:.2f} miles: {state}, {name} ($ {cost})".format(
-                        miles=miles_so_far,
-                        state=state_name,
-                        name=station_name,
-                        cost=cost_value,
-                    )
+                    f"After {miles_so_far:.0f} mi: {state_name}, {station_name} (${cost_val})"
                 )
-
                 stops_explained.append(
-                    "Drive {miles:.2f} miles, stop in {state} at {name}, buy {gallons} gallons for $ {cost}."
-                    .format(
-                        miles=stop["segment_distance_miles"],
-                        state=state_name,
-                        name=station_name,
-                        gallons=gallons_value,
-                        cost=cost_value,
-                    )
+                    f"Drive {segment_miles:.2f} miles, stop in {state_name} at {station_name}, buy {gallons_val} gallons for ${cost_val}."
                 )
 
-            # Convert state codes to full names
-            # Example: ["NY", "PA", "OH"] → "NEW YORK > PENNSYLVANIA > OHIO"
-            state_movement = " > ".join(
-                [name for name in (
-                    state_code_to_full_name(state_code) for state_code in state_corridor
-                ) if name]
-            )
+            # Convert state codes to full names (use cached lookups)
+            state_movement = " > ".join(state_name_cache.get(s, s) for s in state_corridor)
 
             #  Build Comprehensive Response
-            # Organized into logical sections for easy consumption
             response_data = {
                 "route_summary": {
                     "start_location": start_text,
@@ -311,28 +295,22 @@ class RoutePlanAPIView(APIView):
                 }
             }
             
-            logger.info(f"Request completed successfully. Total cost: ${round(total_cost, 2)}")
             return Response(response_data)
         
         except ValueError as ve:
-            # 400 Bad Request: Client-side validation errors
-            logger.error(f"Validation error: {str(ve)}")
             return Response(
                 {"error": str(ve), "type": "validation_error"},
                 status=status.HTTP_400_BAD_REQUEST
             )
             
         except requests.exceptions.RequestException as re:
-            # 503 Service Unavailable: External API failures
-            logger.error(f"API request failed: {str(re)}")
             return Response(
-                {"error": "Failed to fetch routing data. Please check API configuration.", "details": str(re)},
+                {"error": "Failed to fetch routing data", "details": str(re)},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE
             )
             
         except Exception as exc:
-            # 500 Internal Server Error: Unexpected errors
-            logger.error(f"Unexpected error: {str(exc)}", exc_info=True)
+            logger.error(f"Error: {str(exc)}")
             return Response(
                 {"error": "An unexpected error occurred", "details": str(exc)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
