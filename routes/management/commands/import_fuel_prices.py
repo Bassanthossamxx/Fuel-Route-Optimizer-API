@@ -4,9 +4,9 @@ from routes.models import FuelStation
 
 
 class Command(BaseCommand):
-    help = "One-time import of fuel station prices from CSV file (bulk insert)"
+    help = "One-time import of fuel station prices (keeps highest price per station/state)"
 
-    def add_arguments(self, parser):
+    def add_arguments(self, parser):    
         parser.add_argument(
             '--file',
             type=str,
@@ -17,7 +17,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         file_path = options['file']
 
-        to_create = []
+        station_map = {}  # (station_name, state) -> FuelStation
         skipped_count = 0
         failed_count = 0
 
@@ -39,15 +39,21 @@ class Command(BaseCommand):
                             skipped_count += 1
                             continue
 
-                        station = FuelStation(
-                            station_name=station_name,
-                            state=state,
-                            address=row.get('Address', '').strip(),
-                            city=row.get('City', '').strip(),
-                            price_per_gallon=float(price),
-                        )
+                        price = float(price)
+                        key = (station_name, state)
 
-                        to_create.append(station)
+                        # If station already exists, keep the HIGHEST price
+                        if key in station_map:
+                            if price > station_map[key].price_per_gallon:
+                                station_map[key].price_per_gallon = price
+                        else:
+                            station_map[key] = FuelStation(
+                                station_name=station_name,
+                                state=state,
+                                address=row.get('Address', '').strip(),
+                                city=row.get('City', '').strip(),
+                                price_per_gallon=price,
+                            )
 
                     except Exception as row_error:
                         failed_count += 1
@@ -63,14 +69,17 @@ class Command(BaseCommand):
             )
             return
 
-        # Bulk insert (VERY FAST)
+        before_count = FuelStation.objects.count()
+
         FuelStation.objects.bulk_create(
-            to_create,
+            station_map.values(),
             batch_size=500,
             ignore_conflicts=True,
         )
 
+        after_count = FuelStation.objects.count()
+
         self.stdout.write(self.style.SUCCESS("Fuel stations import completed"))
-        self.stdout.write(f"Added records   : {len(to_create)}")
+        self.stdout.write(f"Added records   : {after_count - before_count}")
         self.stdout.write(f"Skipped records : {skipped_count}")
         self.stdout.write(f"Failed records  : {failed_count}")
