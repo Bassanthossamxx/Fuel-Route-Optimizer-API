@@ -14,6 +14,7 @@ SECRET_KEY = os.getenv("SECRET_KEY")
 DEBUG = os.getenv("DEBUG", "False") == "True"
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
 DATABASE_URL = os.getenv("DATABASE_URL")
+OPENROUTESERVICE_API_KEY = os.getenv("OPENROUTESERVICE_API_KEY")
 
 # Application definition
 INSTALLED_APPS = [
