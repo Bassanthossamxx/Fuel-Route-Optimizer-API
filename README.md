@@ -52,23 +52,23 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-4. **Environment configuration**
-Create `.env` file in project root:
+### 4. Environment Configuration
+
+Create a `.env` file in the project root. Use `.env.example` as a reference.
+
 ```env
 # Django
 SECRET_KEY=your-secret-key-here
 DEBUG=True
 
-# Database
-DB_NAME=fuel_optimizer_db
-DB_USER=postgres
-DB_PASSWORD=your-password
-DB_HOST=localhost
-DB_PORT=5432
+# Database (PostgreSQL – optional)
+# If not provided, SQLite will be used by default
+DATABASE_URL=postgresql://USERNAME:PASSWORD@HOST/neondb?sslmode=require
 
 # OpenRouteService API
 OPENROUTESERVICE_API_KEY=your-api-key-here
 ```
+ 
 
 5. **Database setup**
 ```bash
@@ -146,9 +146,7 @@ Plan optimal route with fuel stops.
     "route_geojson": {
       "type": "LineString",
       "coordinates": [[-73.9708, 40.6829], [-74.0074, 40.7257], ...]
-    },
-    "encoded_polyline": "m{hwFtlnbME?eALOB...",
-    "format_info": "Use route_geojson for Leaflet/Mapbox, encoded_polyline for Google Maps"
+    }
   }
 }
 ```
@@ -253,7 +251,7 @@ Fuel-Route-Optimizer-API/
 
 2. **USA Validation** - Check coordinates fall within USA bounding boxes
    ```python
-   is_within_us_bbox([-74.006, 40.7128]) → True
+   is_inside_usa([-74.006, 40.7128]) → True
    ```
 
 3. **Routing** - Single API call to OpenRouteService
@@ -312,10 +310,10 @@ Fuel-Route-Optimizer-API/
 
 ---
 
-##  Acknowledgments
+## Acknowledgments
 
-- **OpenRouteService** for routing and geocoding APIs
-- **fuel-prices.csv** for comprehensive USA fuel station data
-- **Django REST Framework** for robust API development
+* **OpenRouteService** for routing and geocoding APIs
+* **fuel-prices.csv** for comprehensive U.S. fuel station data
+* **Django REST Framework** for building robust APIs
+* **NeonDB** for providing a managed PostgreSQL database
 
----
