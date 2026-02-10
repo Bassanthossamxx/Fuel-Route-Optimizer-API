@@ -4,14 +4,14 @@ OpenRouteService Integration Module
 This module handles all interactions with the OpenRouteService API:
 1. Geocoding: Convert location names to coordinates
 2. Routing: Calculate driving routes between two points
-3. Geometry Processing: Encode/decode polylines, simplify GeoJSON
+3. Geometry Processing: Decode polylines, simplify GeoJSON
 4. State Management: Build state corridors for USA routes
 
 OpenRouteService API Docs: https://openrouteservice.org/dev/#/api-docs
 
 Key Optimizations:
 - Single routing API call per request (minimize API usage)
-- Polyline encoding for compact coordinate storage
+- Polyline decoding for GeoJSON conversion
 - Ramer-Douglas-Peucker algorithm for geometry simplification
 - BFS algorithm for state-to-state path finding
 """
@@ -151,8 +151,6 @@ def normalize_state_code(value: str | None) -> str | None:
     
     Examples:
         "New York" → "NY"
-        "NY" → "NY"
-        "new york" → "NY"
     """
     if not value:
         return None
@@ -182,11 +180,6 @@ def build_state_corridor(start_state: str | None, end_state: str | None) -> list
     Build shortest path through US states using BFS (Breadth-First Search).
     
     Uses US_STATE_NEIGHBORS adjacency graph to find path.
-    
-    Examples:
-        build_state_corridor("NY", "CA") → ["NY", "PA", "OH", "IN", "IL", ...]
-        build_state_corridor("NY", "NJ") → ["NY", "NJ"]
-        build_state_corridor("NY", "NY") → ["NY"]
     
     Algorithm:
         1. Start at start_state
@@ -232,7 +225,7 @@ def build_state_corridor(start_state: str | None, end_state: str | None) -> list
     return list(reversed(path))
 
 
-def is_within_us_bbox(coords: list) -> bool:
+def is_inside_usa(coords: list) -> bool:
     """
     Check if coordinates fall within USA bounding boxes.
     
@@ -261,7 +254,6 @@ def geocode_place(place_name: str, enforce_us: bool = False) -> dict:
     
     Examples:
         "New York, NY" → {"coords": [-74.006, 40.7128], "country_code": "US", "state": "NY"}
-        "Los Angeles" → {"coords": [-118.2437, 34.0522], "country_code": "US", "state": "CA"}
     
     Args:
         place_name: Text description of location
@@ -273,10 +265,6 @@ def geocode_place(place_name: str, enforce_us: bool = False) -> dict:
             "country_code": "US",       # ISO country code
             "state": "NY"               # 2-letter state code
         }
-    
-    Raises:
-        ValueError: If location cannot be geocoded
-        requests.HTTPError: If API request fails
     """
     url = f"{ORS_BASE_URL}/geocode/search"
     headers = {
@@ -327,7 +315,7 @@ def get_route(start_coords: list, end_coords: list) -> dict:
     """
     Get driving route from OpenRouteService Directions API.
     
-    🎯 KEY REQUIREMENT: This is the ONLY routing API call per request!
+    # This is the ONLY routing API call per request!
     
     Args:
         start_coords: [longitude, latitude] of start point
@@ -341,15 +329,6 @@ def get_route(start_coords: list, end_coords: list) -> dict:
             },
             "geometry": {...}            # Route coordinates (encoded or GeoJSON)
         }
-    
-    API Response Formats:
-        - format="geojson" → Returns encoded polyline string (most common)
-        - "features" structure → GeoJSON Feature format
-        - "routes" structure → Direct routes array format
-    
-    Raises:
-        requests.HTTPError: If API request fails
-        ValueError: If response format is unexpected
     """
     url = f"{ORS_BASE_URL}/v2/directions/driving-car"
     headers = {
@@ -391,7 +370,16 @@ def _point_line_distance(point: list[float], start: list[float], end: list[float
     """
     Calculate perpendicular distance from point to line segment.
     
-    Used by Ramer-Douglas-Peucker simplification algorithm.
+    Visual explanation:
+         point (px, py)
+            |
+            |  <- perpendicular distance
+            |
+    start ●--------● end
+         (sx,sy)  (ex,ey)
+    
+    algorithm to decide if a point is
+    "close enough" to the line connecting its neighbors.
     
     Args:
         point: [x, y] coordinate to measure from
@@ -401,63 +389,81 @@ def _point_line_distance(point: list[float], start: list[float], end: list[float
     Returns:
         Euclidean distance from point to line segment
     """
+    # If start and end are the same point, just measure direct distance
     if start == end:
         dx = point[0] - start[0]
         dy = point[1] - start[1]
-        return (dx * dx + dy * dy) ** 0.5
+        return (dx * dx + dy * dy) ** 0.5  
 
+    # Extract coordinates for clarity
     sx, sy = start
     ex, ey = end
     px, py = point
-    dx = ex - sx
-    dy = ey - sy
+    
+    # STEP 1: Calculate line segment direction vector
+    dx = ex - sx  # horizontal component
+    dy = ey - sy  # vertical component
+    
+    # EDGE CASE 2: Double-check for zero-length segment
     if dx == 0 and dy == 0:
         return ((px - sx) ** 2 + (py - sy) ** 2) ** 0.5
 
+    # STEP 2: Project point onto the infinite line (find closest point on line)
     t = ((px - sx) * dx + (py - sy) * dy) / (dx * dx + dy * dy)
-    t = max(0.0, min(1.0, t))
-    proj_x = sx + t * dx
+    
+    # STEP 3: Clamp to [0, 1] to stay within the segment
+    t = max(0.0, min(1.0, t))  # If t < 0, use start. If t > 1, use end.
+    
+    # STEP 4: Calculate the projection point on the segment
+    proj_x = sx + t * dx 
     proj_y = sy + t * dy
+    
+    # STEP 5: Return distance from original point to projection point
     return ((px - proj_x) ** 2 + (py - proj_y) ** 2) ** 0.5
 
 
 def simplify_linestring(coords: list[list[float]], tolerance: float) -> list[list[float]]:
     """
     Simplify coordinate array using Ramer-Douglas-Peucker algorithm.
+    how it works?:
+    Imagine drawing a line from first to last point. Any point in between that's
+    "close enough" to this line can be removed. If a point is far from the line,
+    we keep it and recursively simplify the segments on either side.
     
-    Recursively removes points that are closer than 'tolerance' to the line
-    connecting their neighbors. Dramatically reduces coordinate count while
-    preserving overall shape.
-    
-    Example:
-        100 coordinates with tolerance=0.01 → ~10 coordinates
-    
-    Args:
-        coords: List of [lon, lat] coordinates
-        tolerance: Maximum distance threshold (0.01 recommended for degrees)
+    Visual example:
+    Before:  ●--●--●--●--●--●--●     (7 points)
+    After:   ●--------------●        (2 points) - middle points were too close to line
+    Real-world benefit:
+        Faster map rendering, smaller JSON responses
     
     Returns:
         Simplified list of [lon, lat] coordinates
     """
+    # If 2 or fewer points, can't simplify further
     if not coords or len(coords) <= 2:
         return coords
 
-    max_dist = 0.0
-    index = 0
+    # STEP 1: Draw imaginary line from first to last point
     start = coords[0]
     end = coords[-1]
-
-    for i in range(1, len(coords) - 1):
+    
+    # STEP 2: Find the point FARTHEST from this line (the "peak")
+    max_dist = 0.0
+    index = 0
+    for i in range(1, len(coords) - 1):  # Skip first and last (they're the line endpoints)
         dist = _point_line_distance(coords[i], start, end)
         if dist > max_dist:
             max_dist = dist
-            index = i
+            index = i  # Remember which point is farthest
 
+    # STEP 3: Decide if the farthest point is "significant"
     if max_dist > tolerance:
-        left = simplify_linestring(coords[: index + 1], tolerance)
-        right = simplify_linestring(coords[index:], tolerance)
-        return left[:-1] + right
+        # Point is far enough - it's important! Keep it and recursively simplify both sides
+        left = simplify_linestring(coords[: index + 1], tolerance)   # Simplify left segment
+        right = simplify_linestring(coords[index:], tolerance)        # Simplify right segment
+        return left[:-1] + right  # Merge (remove duplicate middle point)
 
+    # STEP 4: All middle points are too close - just keep start and end
     return [start, end]
 
 
@@ -465,14 +471,11 @@ def simplify_geojson_linestring(geometry: dict | None, tolerance: float) -> dict
     """
     Simplify GeoJSON LineString by reducing coordinate count.
     
-    Wrapper around simplify_linestring() for GeoJSON objects.
-    
     Args:
         geometry: GeoJSON LineString {"type": "LineString", "coordinates": [...]}
-        tolerance: Simplification threshold (0.01 = good balance)
     
     Returns:
-        Simplified GeoJSON LineString or None if invalid input
+        Simplified GeoJSON LineString
     """
     if not geometry or not isinstance(geometry, dict):
         return None
@@ -486,97 +489,56 @@ def simplify_geojson_linestring(geometry: dict | None, tolerance: float) -> dict
         "coordinates": simplified,
     }
 
-
-def encode_polyline(coords: list[list[float]], precision: int = 5) -> str:
-    """
-    Encode coordinates into Google Polyline Format (compressed string).
-    
-    Reduces storage/transmission size by ~90% compared to raw JSON.
-    Compatible with Google Maps, Mapbox, Leaflet polyline decoders.
-    
-    Algorithm:
-        1. Convert lat/lon to integers (multiply by 10^precision)
-        2. Calculate deltas from previous point (differential encoding)
-        3. Apply variable-length encoding (fewer bits for small deltas)
-        4. Convert to ASCII string
-    
-    Example:
-        [[lon1, lat1], [lon2, lat2]] → "m{hwFtlnbME?eALOB..."
-    
-    Args:
-        coords: List of [lon, lat] coordinates
-        precision: Decimal places (5 = ~1 meter accuracy, 6 = ~10cm)
-    
-    Returns:
-        Encoded polyline string
-    """
-    factor = 10 ** precision
-    last_lat = 0
-    last_lng = 0
-    result: list[str] = []
-
-    def encode_value(value: int) -> None:
-        value = ~(value << 1) if value < 0 else (value << 1)
-        while value >= 0x20:
-            result.append(chr((0x20 | (value & 0x1F)) + 63))
-            value >>= 5
-        result.append(chr(value + 63))
-
-    for lng, lat in coords:
-        lat_i = int(round(lat * factor))
-        lng_i = int(round(lng * factor))
-        encode_value(lat_i - last_lat)
-        encode_value(lng_i - last_lng)
-        last_lat = lat_i
-        last_lng = lng_i
-
-    return "".join(result)
-
-
+# this is for google polyline format, not coded by me, but used in some ORS responses
 def decode_polyline(encoded: str, precision: int = 5) -> list[list[float]]:
     """
     Decode Google Polyline Format string into coordinates.
+
+    Google Polyline Format compresses GPS coordinates into a short string.
+    Instead of "40.7128,-74.0060" (16 chars), we get "m{hwF" (5 chars).
     
-    ⭐ CRITICAL FUNCTION: OpenRouteService returns encoded polyline strings,
-    not GeoJSON, despite format="geojson" parameter. This function converts
-    the encoded string to [[lon, lat], ...] format for map display.
-    
-    Algorithm (reverse of encode_polyline):
+    Algorithm:
         1. Read variable-length encoded integers from string
-        2. Reconstruct deltas between points
+        2. Reconstruct deltas between consecutive points
         3. Accumulate deltas to get absolute coordinates
         4. Divide by 10^precision to get decimal degrees
-    
-    Example:
-        "m{hwFtlnbME?eALOB..." → [[-74.006, 40.7128], [-74.007, 40.7130], ...]
-    
-    Args:
-        encoded: Polyline string from OpenRouteService
-        precision: Must match encoding precision (default 5)
-    
+
     Returns:
         List of [longitude, latitude] coordinates
     """
-    factor = 10 ** precision
+    # SETUP: Factor for converting integers back to decimal degrees
+    factor = 10 ** precision  # precision=5 → factor=100000
     coords = []
     index = 0
+    
+    # Accumulated coordinates (starts at 0,0 then we add deltas)
     lat = 0
     lng = 0
 
+    # Read pairs of (latitude, longitude) deltas until string ends
     while index < len(encoded):
-        # Decode latitude
+        # STEP 1: Decode latitude delta
         shift = 0
         result = 0
         while True:
-            b = ord(encoded[index]) - 63
+            # Read each character as a 5-bit chunk
+            b = ord(encoded[index]) - 63  # Convert ASCII to 0-63 range
             index += 1
-            result |= (b & 0x1F) << shift
+            
+            # Add this chunk's bits to the result
+            result |= (b & 0x1F) << shift  # 0x1F = 31 (bitmask for lower 5 bits)
             shift += 5
-            if b < 0x20:
+            
+            # If bit 6 is 0, this is the last chunk for this number
+            if b < 0x20:  # 0x20 = 32 (bit 6 set)
                 break
+        
+        # Convert from zig-zag encoding (handles negative numbers)
+        # If LSB is 1, number is negative: invert all bits
+        # If LSB is 0, number is positive: shift right by 1
         lat += ~(result >> 1) if (result & 1) else (result >> 1)
 
-        # Decode longitude
+        # STEP 2: Decode longitude delta (same process)
         shift = 0
         result = 0
         while True:
@@ -588,6 +550,7 @@ def decode_polyline(encoded: str, precision: int = 5) -> list[list[float]]:
                 break
         lng += ~(result >> 1) if (result & 1) else (result >> 1)
 
+        # STEP 3: Convert accumulated integers to decimal degrees and store
         coords.append([lng / factor, lat / factor])
 
     return coords

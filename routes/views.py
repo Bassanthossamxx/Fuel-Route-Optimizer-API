@@ -29,12 +29,11 @@ from .pagination import FuelStationPagination
 from .services.openrouteservice import (
     geocode_place,               # Convert "New York, NY" → coordinates
     get_route,                   # Get route data from OpenRouteService
-    is_within_us_bbox,          # Validate coordinates are in USA
-    build_state_corridor,       # Create state-by-state path
-    state_code_to_full_name,    # NY → NEW YORK
+    is_inside_usa,               # Validate coordinates are in USA
+    build_state_corridor,        # Create state-by-state path
+    state_code_to_full_name,     # NY → NEW YORK
     simplify_geojson_linestring, # Reduce coordinate count for response
-    encode_polyline,            # Compress coordinates (Google format)
-    decode_polyline,            # Decompress polyline → GeoJSON
+    decode_polyline,             # Decompress polyline → GeoJSON
 )
 
 # Initialize logger for debugging and monitoring
@@ -124,13 +123,13 @@ class RoutePlanAPIView(APIView):
             logger.info(f"Geocoded successfully: {start_data['coords']} -> {end_data['coords']}")
 
             # Enforce USA-Only Rule
-            if start_data["country_code"] != "US" or not is_within_us_bbox(start_data["coords"]):
+            if start_data["country_code"] != "US" or not is_inside_usa(start_data["coords"]):
                 return Response(
                     {"error": "Start location must be inside the USA"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            if end_data["country_code"] != "US" or not is_within_us_bbox(end_data["coords"]):
+            if end_data["country_code"] != "US" or not is_inside_usa(end_data["coords"]):
                 return Response(
                     {"error": "End location must be inside the USA"},
                     status=status.HTTP_400_BAD_REQUEST
@@ -151,7 +150,6 @@ class RoutePlanAPIView(APIView):
             # We need to decode it to GeoJSON format for map libraries (Leaflet/Mapbox)
             geometry = route.get("geometry")
             route_geojson = None
-            encoded_polyline = None
             
             if geometry:
                 logger.info(f"Geometry type: {type(geometry)}, is dict: {isinstance(geometry, dict)}")
@@ -160,13 +158,11 @@ class RoutePlanAPIView(APIView):
                     # Case 1: Geometry is already GeoJSON format (dict with "type" and "coordinates")
                     simplified = simplify_geojson_linestring(geometry, tolerance=0.01)
                     route_geojson = simplified if simplified else geometry
-                    encoded_polyline = encode_polyline(geometry.get("coordinates", []))
                     logger.info(f"GeoJSON type: {route_geojson.get('type') if route_geojson else 'None'}")
                     
                 elif isinstance(geometry, str):
                     # Case 2: Geometry is encoded polyline string (most common from OpenRouteService)
                     # Example: "m{hwFtlnbME?eALOB..." → [[lon, lat], [lon, lat], ...]
-                    encoded_polyline = geometry
                     decoded_coords = decode_polyline(geometry)
                     
                     # Create GeoJSON LineString from decoded coordinates
@@ -175,6 +171,7 @@ class RoutePlanAPIView(APIView):
                         "coordinates": decoded_coords  # [[lon, lat], [lon, lat], ...]
                     }
                     
+                    # Simplify to reduce response size (removes ~90% of coordinates)
                     route_geojson = simplify_geojson_linestring(full_geojson, tolerance=0.01)
                     if not route_geojson:
                         route_geojson = full_geojson
@@ -289,7 +286,7 @@ class RoutePlanAPIView(APIView):
                 ) if name]
             )
 
-            # === STEP 12: Build Comprehensive Response ===
+            #  Build Comprehensive Response
             # Organized into logical sections for easy consumption
             response_data = {
                 "route_summary": {
@@ -310,21 +307,15 @@ class RoutePlanAPIView(APIView):
                 "detailed_fuel_stops": fuel_stops,
                 "route_plan_explanation": stops_explained,
                 "map_data": {
-                    "route_geojson": route_geojson,
-                    "encoded_polyline": encoded_polyline,
-                    "format_info": "Use route_geojson for Leaflet/Mapbox, encoded_polyline for Google Maps"
+                    "route_geojson": route_geojson
                 }
             }
             
             logger.info(f"Request completed successfully. Total cost: ${round(total_cost, 2)}")
             return Response(response_data)
-
-        # === ERROR HANDLING ===
-        # Different HTTP status codes for different error types
         
         except ValueError as ve:
             # 400 Bad Request: Client-side validation errors
-            # Example: Invalid location format, geocoding failed
             logger.error(f"Validation error: {str(ve)}")
             return Response(
                 {"error": str(ve), "type": "validation_error"},
@@ -333,7 +324,6 @@ class RoutePlanAPIView(APIView):
             
         except requests.exceptions.RequestException as re:
             # 503 Service Unavailable: External API failures
-            # Example: OpenRouteService down, API key invalid, rate limit exceeded
             logger.error(f"API request failed: {str(re)}")
             return Response(
                 {"error": "Failed to fetch routing data. Please check API configuration.", "details": str(re)},
@@ -342,7 +332,6 @@ class RoutePlanAPIView(APIView):
             
         except Exception as exc:
             # 500 Internal Server Error: Unexpected errors
-            # Example: Database issues, programming errors, data corruption
             logger.error(f"Unexpected error: {str(exc)}", exc_info=True)
             return Response(
                 {"error": "An unexpected error occurred", "details": str(exc)},
