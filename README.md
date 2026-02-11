@@ -94,7 +94,7 @@ API will be available at `http://localhost:8000`
 
 ### 1. Route Planning
 
-**POST** `/api/route-plan/`
+**POST** `/api/route/`
 
 Plan optimal route with fuel stops.
 
