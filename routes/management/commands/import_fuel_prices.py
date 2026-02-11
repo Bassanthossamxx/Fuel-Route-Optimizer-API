@@ -80,6 +80,6 @@ class Command(BaseCommand):
         after_count = FuelStation.objects.count()
 
         self.stdout.write(self.style.SUCCESS("Fuel stations import completed"))
-        self.stdout.write(f"Added records   : {after_count - before_count}")
+        self.stdout.write(f"Added records   : {after_count - before_count}") 
         self.stdout.write(f"Skipped records : {skipped_count}")
         self.stdout.write(f"Failed records  : {failed_count}")

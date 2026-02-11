@@ -25,7 +25,7 @@ Currently, the API does not require authentication. For production deployment, c
 
 | Method | Endpoint | Description | Auth Required |
 |--------|----------|-------------|---------------|
-| POST | `/api/route-plan/` | Plan route with fuel stops | No |
+| POST | `/api/route/` | Plan route with fuel stops | No |
 | GET | `/api/stations/` | List all fuel stations | No |
 | GET | `/api/stations/?page=2` | Paginated fuel stations | No |
 
