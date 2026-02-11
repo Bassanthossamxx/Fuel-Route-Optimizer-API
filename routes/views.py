@@ -53,24 +53,24 @@ class FuelStationListAPIView(ListAPIView):
 
 class RoutePlanAPIView(APIView):
     """
-    POST /api/route-plan/
+    POST /api/route/
     
     Plan optimal driving route with cost-effective fuel stops.
     
-    ⚙️ Vehicle Specifications:
+    Vehicle Specifications:
     - Maximum range: 500 miles per tank
     - Fuel efficiency: 10 MPG (miles per gallon)
     - Tank capacity: 50 gallons
     
-    🌍 Geographic Restrictions:
+    Geographic Restrictions:
     - USA locations only (validated via bounding box)
     
-    🎯 Optimization Strategy:
+    Optimization Strategy:
     - Minimize total fuel cost
     - Select cheapest station in each state along route
     - Respect 500-mile range constraint
     
-    📡 API Usage:
+    API Usage:
     - Single routing API call (OpenRouteService)
     - Geocoding calls for start/end locations
     """
